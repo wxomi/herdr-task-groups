@@ -1,4 +1,4 @@
-"""CLI entrypoint and interactive fzf palette for Herdr Task Groups."""
+"""CLI entrypoint and interactive multi-select fzf palette for Herdr Task Groups."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 from task_groups.client import HerdrClient
 from task_groups.groups import (
@@ -23,7 +24,7 @@ from task_groups.groups import (
 )
 
 
-def run_picker(prompt: str, items: list[str]) -> str | None:
+def run_picker(prompt: str, items: list[str], multi: bool = False) -> list[str]:
     """Show an interactive selection menu using fzf if available, else numeric stdin prompt."""
     fzf_bin = shutil.which("fzf") or (
         "/opt/homebrew/bin/fzf" if os.path.exists("/opt/homebrew/bin/fzf") else None
@@ -31,25 +32,28 @@ def run_picker(prompt: str, items: list[str]) -> str | None:
 
     if fzf_bin and sys.stdin.isatty():
         try:
+            cmd = [
+                fzf_bin,
+                "--prompt",
+                f"{prompt} > ",
+                "--height",
+                "50%",
+                "--layout=reverse",
+                "--border",
+                "--cycle",
+            ]
+            if multi:
+                cmd.extend(["--multi", "--bind=ctrl-a:select-all,ctrl-d:deselect-all"])
             proc = subprocess.Popen(
-                [
-                    fzf_bin,
-                    "--prompt",
-                    f"{prompt} > ",
-                    "--height",
-                    "40%",
-                    "--layout=reverse",
-                    "--border",
-                    "--cycle",
-                ],
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 text=True,
             )
             out, _ = proc.communicate(input="\n".join(items) + "\n")
             if proc.returncode == 0 and out.strip():
-                return out.strip()
-            return None
+                return [line.strip() for line in out.strip().splitlines() if line.strip()]
+            return []
         except Exception:
             pass
 
@@ -58,134 +62,124 @@ def run_picker(prompt: str, items: list[str]) -> str | None:
         print(f"  [{idx}] {it}")
     print("  [q] Cancel\n")
     try:
-        choice = input("Enter selection: ").strip()
+        choice = input("Enter selection (comma-separated for multi): ").strip()
         if not choice or choice.lower() == "q":
-            return None
-        if choice.isdigit():
-            num = int(choice)
-            if 1 <= num <= len(items):
-                return items[num - 1]
-        for it in items:
-            if choice.lower() in it.lower():
-                return it
+            return []
+        selected = []
+        for part in choice.split(","):
+            part = part.strip()
+            if part.isdigit():
+                num = int(part)
+                if 1 <= num <= len(items):
+                    selected.append(items[num - 1])
+            else:
+                for it in items:
+                    if part.lower() in it.lower():
+                        selected.append(it)
+                        break
+        return selected
     except (EOFError, KeyboardInterrupt):
-        return None
-    return None
+        return []
 
 
 def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> int:
-    """Interactively move an agent to an existing, new, or ungrouped task group."""
+    """Interactively select one or multiple agents and move them to a task group."""
     snap = client.snapshot() if client.is_available() else {}
     agents = snap.get("agents", [])
     if not agents:
         print("No active agents found in Herdr.")
         return 1
 
-    agents_by_pane = {a.get("pane_id"): a for a in agents if a.get("pane_id")}
-
-    target_pid = (
-        pane_id
-        or os.environ.get("TARGET_PANE")
-        or os.environ.get("HERDR_PANE_ID")
-    )
-
-    if not target_pid or target_pid not in agents_by_pane:
-        f_pid = snap.get("focused_pane_id")
-        if f_pid and f_pid in agents_by_pane:
-            target_pid = f_pid
-
-    if not target_pid or target_pid not in agents_by_pane:
-        if len(agents) == 1:
-            target_pid = agents[0].get("pane_id")
-        else:
-            agent_choices = []
-            for a in agents:
-                pid = a.get("pane_id", "")
-                agent_type = a.get("agent", "agent")
-                title = (a.get("tokens") or {}).get("session") or a.get("title", "")
-                cwd = a.get("cwd", "")
-                short_cwd = cwd.split("/")[-1] if cwd else "~"
-                agent_choices.append(f"{pid} | [{agent_type}] {title} ({short_cwd})")
-
-            chosen = run_picker("Select agent to move:", agent_choices)
-            if not chosen:
-                print("No agent selected.")
-                return 0
-            target_pid = chosen.split(" | ")[0].strip()
-
-    target_agent = agents_by_pane.get(target_pid, {})
-    agent_name = target_agent.get("agent", "agent")
-    agent_title = (target_agent.get("tokens") or {}).get("session") or target_agent.get("title", "")
-
     state = load_group_state()
-    ungrouped_panes = set(state.get("ungrouped_panes", []))
+    custom_groups = state.get("custom_groups", {})
     all_groups = cluster_agents_by_group(snap)
 
-    current_group = None
-    for g_name, g_agents in all_groups.items():
-        if any(a.get("pane_id") == target_pid for a in g_agents):
-            current_group = g_name
-            break
-    if not current_group:
-        current_group = "default"
+    f_pid = pane_id or os.environ.get("TARGET_PANE") or snap.get("focused_pane_id")
 
-    is_ungrouped = target_pid in ungrouped_panes
+    # Sort agents: focused pane first
+    sorted_agents = sorted(
+        agents,
+        key=lambda a: (0 if a.get("pane_id") == f_pid else 1, a.get("pane_id", ""))
+    )
 
-    options: list[str] = []
+    agent_choices = []
+    for a in sorted_agents:
+        pid = a.get("pane_id", "")
+        agent_type = a.get("agent", "agent")
+        title = (a.get("tokens") or {}).get("session") or a.get("title", "")
+        cwd = a.get("cwd", "")
+        short_cwd = cwd.split("/")[-1] if cwd else "~"
+        current_g = custom_groups.get(pid)
+        group_badge = f" [Group: {current_g}]" if current_g else ""
+        is_focused = " (focused)" if pid == f_pid else ""
+        agent_choices.append(f"{pid} | [{agent_type}] {title[:32]} ({short_cwd}){group_badge}{is_focused}")
 
-    # 1. Existing groups
+    # Prompt user to select agent(s) (Tab to mark multiple, Enter to confirm)
+    selected_agent_lines = run_picker(
+        "Select agent(s) [Tab=multi-select, Ctrl-A=all, Enter=confirm]:",
+        agent_choices,
+        multi=True,
+    )
+    if not selected_agent_lines:
+        print("No agent selected.")
+        return 0
+
+    target_pids = [line.split(" | ")[0].strip() for line in selected_agent_lines]
+
+    # Present group options
     existing_groups = sorted([g for g in all_groups if not g.startswith("_solo_")])
+    options: list[str] = []
     for g in existing_groups:
-        if g == current_group and not is_ungrouped:
-            options.append(f"📁 Move to: {g}  (current)")
-        else:
-            options.append(f"📁 Move to: {g}")
+        options.append(f"📁 Move to: {g}")
 
-    # 2. Group actions
     options.append("➕ New group...")
     options.append("✖ Remove from group (make standalone)")
     options.append("🔄 Reset to automatic directory grouping")
-    if current_group and not current_group.startswith("_solo_"):
-        options.append(f"📦 Move entire group '{current_group}' to workspace...")
+    if len(target_pids) == 1:
+        curr_g = custom_groups.get(target_pids[0])
+        if curr_g and not curr_g.startswith("_solo_"):
+            options.append(f"📦 Move entire group '{curr_g}' to workspace...")
 
-    prompt_label = f"Agent: [{agent_name}] {agent_title[:28]}"
-    if is_ungrouped:
-        prompt_label += " [Ungrouped]"
-    elif current_group:
-        prompt_label += f" [Group: {current_group}]"
-
-    selected = run_picker(prompt_label, options)
-    if not selected:
+    target_label = f"{len(target_pids)} agent(s)" if len(target_pids) > 1 else target_pids[0]
+    prompt_label = f"Move {target_label} to group:"
+    chosen = run_picker(prompt_label, options, multi=False)
+    if not chosen:
         print("Canceled.")
         return 0
 
+    selected = chosen[0]
+
     if "Remove from group" in selected:
-        ungroup_agent(target_pid)
+        for pid in target_pids:
+            ungroup_agent(pid)
         apply_collapsible_groups(client, force=True)
-        print(f"Agent {target_pid} removed from group (now standalone).")
+        print(f"Removed {len(target_pids)} agent(s) from groups.")
         return 0
 
     if "Reset to automatic directory" in selected:
-        reset_agent_group(target_pid)
+        for pid in target_pids:
+            reset_agent_group(pid)
         apply_collapsible_groups(client, force=True)
-        print(f"Agent {target_pid} reset to automatic directory grouping.")
+        print(f"Reset {len(target_pids)} agent(s) to automatic directory grouping.")
         return 0
 
     if "Move entire group" in selected:
-        ws_options = [w.get("label") or w.get("workspace_id", "") for w in snap.get("workspaces", [])]
-        ws_options.append("➕ New workspace...")
-        chosen_ws = run_picker(f"Move group '{current_group}' to workspace:", ws_options)
-        if not chosen_ws:
-            print("Canceled.")
-            return 0
-        if "New workspace" in chosen_ws:
-            target_ws = input("Enter new workspace name: ").strip()
-        else:
-            target_ws = chosen_ws
-        if target_ws:
-            count = move_group_to_workspace(client, current_group, target_ws)
-            apply_collapsible_groups(client, force=True)
-            print(f"Moved {count} agents in group '{current_group}' to workspace '{target_ws}'.")
+        curr_g = custom_groups.get(target_pids[0])
+        if curr_g:
+            ws_options = [w.get("label") or w.get("workspace_id", "") for w in snap.get("workspaces", [])]
+            ws_options.append("➕ New workspace...")
+            chosen_ws = run_picker(f"Move group '{curr_g}' to workspace:", ws_options, multi=False)
+            if not chosen_ws:
+                print("Canceled.")
+                return 0
+            if "New workspace" in chosen_ws[0]:
+                target_ws = input("Enter new workspace name: ").strip()
+            else:
+                target_ws = chosen_ws[0]
+            if target_ws:
+                count = move_group_to_workspace(client, curr_g, target_ws)
+                apply_collapsible_groups(client, force=True)
+                print(f"Moved {count} agents in group '{curr_g}' to workspace '{target_ws}'.")
         return 0
 
     if "New group..." in selected:
@@ -197,22 +191,37 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
         if not new_group:
             print("Group name cannot be empty.")
             return 1
-        move_agent_to_group(target_pid, new_group)
+        for pid in target_pids:
+            move_agent_to_group(pid, new_group)
         apply_collapsible_groups(client, force=True)
-        print(f"Moved agent {target_pid} to new group '{new_group}'.")
+        print(f"Moved {len(target_pids)} agent(s) to new group '{new_group}'.")
         return 0
 
     if selected.startswith("📁 Move to: "):
-        g_name = selected.split("📁 Move to: ")[1].split("  (current)")[0].strip()
-        move_agent_to_group(target_pid, g_name)
+        g_name = selected.split("📁 Move to: ")[1].strip()
+        for pid in target_pids:
+            move_agent_to_group(pid, g_name)
         apply_collapsible_groups(client, force=True)
-        print(f"Moved agent {target_pid} to group '{g_name}'.")
+        print(f"Moved {len(target_pids)} agent(s) to group '{g_name}'.")
         return 0
 
     clean_name = selected.strip()
-    move_agent_to_group(target_pid, clean_name)
+    for pid in target_pids:
+        move_agent_to_group(pid, clean_name)
     apply_collapsible_groups(client, force=True)
-    print(f"Moved agent {target_pid} to group '{clean_name}'.")
+    print(f"Moved {len(target_pids)} agent(s) to group '{clean_name}'.")
+    return 0
+
+
+def watch(client: HerdrClient, interval: float = 2.0) -> int:
+    """Daemon watching Herdr socket and keeping group badges and collapse filters active."""
+    while True:
+        try:
+            if client.is_available():
+                apply_collapsible_groups(client)
+        except Exception:
+            pass
+        time.sleep(interval)
     return 0
 
 
@@ -225,11 +234,15 @@ def main(argv: list[str] | None = None) -> int:
             "Usage: herdr-task-groups [--pick-group] [--toggle-group [NAME]]\n"
             "                        [--groups] [--collapse-all] [--expand-all]\n"
             "                        [--move-group-to-ws <GROUP> <WS>]\n"
-            "                        [--ungroup] [--reset-group] [--pane PANE_ID]"
+            "                        [--ungroup] [--reset-group] [--pane PANE_ID]\n"
+            "                        [--watch]"
         )
         return 0
 
     c = HerdrClient()
+
+    if "--watch" in args:
+        return watch(client=c)
 
     if "--groups" in args:
         snap = c.snapshot() if c.is_available() else {}
@@ -301,7 +314,6 @@ def main(argv: list[str] | None = None) -> int:
             pid = args[args.index("--pane") + 1]
         return interactive_pick_group(client=c, pane_id=pid)
 
-    # Default action if no flag is passed: pick-group
     return interactive_pick_group(client=c)
 
 

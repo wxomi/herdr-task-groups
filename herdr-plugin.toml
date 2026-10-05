@@ -1,14 +1,18 @@
 id = "wxomi.task-groups"
 name = "Task Groups"
-version = "0.1.2"
+version = "0.2.0"
 min_herdr_version = "0.8.0"
-description = "Chrome-style task grouping, interactive fzf palette, and collapsible multi-agent coordination"
+description = "Chrome-style task grouping, interactive multi-select fzf palette, and collapsible coordination"
 platforms = ["linux", "macos"]
+
+# Background daemon keeps group location badges and collapsed filters active
+[[startup]]
+command = ["./run.sh", "--watch"]
 
 [[actions]]
 id = "move-to-group"
 title = "Move Agent to Task Group"
-description = "Open interactive fzf palette to assign agents to task groups"
+description = "Open interactive multi-select fzf palette to assign agents to task groups"
 contexts = ["global", "pane"]
 command = ["./run.sh", "open"]
 

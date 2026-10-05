@@ -114,11 +114,9 @@ def extract_common_task_topic(agents: list[dict]) -> str:
     if len(titles) == 1:
         return titles[0][:32]
 
-    # Check for identical titles
     if all(t == titles[0] for t in titles):
         return titles[0][:32]
 
-    # Check for common task identifier e.g. T45399, PR #123, ISSUE-42
     task_patterns = [
         re.compile(r"\b(T\d{4,7})\b", re.IGNORECASE),
         re.compile(r"\b([A-Z]{2,10}-\d+)\b"),
@@ -131,7 +129,6 @@ def extract_common_task_topic(agents: list[dict]) -> str:
             if len(vals) == 1:
                 return f"Task {vals.pop()}"
 
-    # Common prefix
     first = titles[0]
     prefix_words = []
     words_first = first.split()
@@ -342,7 +339,8 @@ def apply_collapsible_groups(
 
     state = load_group_state()
     collapsed_groups = set(state.get("collapsed_groups", []))
-    custom_group_names = set(state.get("custom_groups", {}).values())
+    custom_groups = state.get("custom_groups", {})
+    custom_group_names = set(custom_groups.values())
 
     visible_pane_ids: list[str] = []
     has_any_collapsed = False
@@ -350,6 +348,8 @@ def apply_collapsible_groups(
     for group_name, agents in groups.items():
         if not agents:
             continue
+        is_custom = group_name in custom_group_names
+
         if group_name in collapsed_groups and len(agents) > 1:
             has_any_collapsed = True
             first_pane = agents[0]
@@ -357,7 +357,7 @@ def apply_collapsible_groups(
             if pid:
                 visible_pane_ids.append(pid)
                 title, location = get_group_summary_info(
-                    group_name, agents, is_custom=(group_name in custom_group_names)
+                    group_name, agents, is_custom=is_custom
                 )
                 curr_session = (first_pane.get("tokens") or {}).get("session")
                 if force or _LAST_SUMMARY_TOKENS.get(pid) != title or curr_session != title:
@@ -375,6 +375,14 @@ def apply_collapsible_groups(
                 if pid:
                     visible_pane_ids.append(pid)
                     _LAST_SUMMARY_TOKENS.pop(pid, None)
+                    if is_custom:
+                        # Report custom group badge so it's always clearly visible in the sidebar
+                        loc = f"📁 {group_name}"
+                        client.report_metadata(
+                            pid,
+                            SOURCE,
+                            {"location": loc},
+                        )
 
     sorted_visible = sorted(visible_pane_ids)
 
