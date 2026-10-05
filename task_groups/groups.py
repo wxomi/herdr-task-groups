@@ -381,14 +381,6 @@ def apply_collapsible_groups(
                 if pid:
                     visible_pane_ids.append(pid)
                     _LAST_SUMMARY_TOKENS.pop(pid, None)
-                    if is_custom:
-                        # Report custom group badge so it's always clearly visible in the sidebar
-                        loc = f"📁 {group_name}"
-                        client.report_metadata(
-                            pid,
-                            SOURCE,
-                            {"location": loc},
-                        )
 
     sorted_visible = sorted(visible_pane_ids)
 
