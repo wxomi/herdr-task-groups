@@ -1,6 +1,6 @@
 id = "wxomi.task-groups"
 name = "Task Groups"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.8.0"
 description = "Chrome-style task grouping, interactive fzf palette, and collapsible multi-agent coordination"
 platforms = ["linux", "macos"]
@@ -10,7 +10,7 @@ id = "move-to-group"
 title = "Move Agent to Task Group"
 description = "Open interactive fzf palette to assign agents to task groups"
 contexts = ["global", "pane"]
-command = ["herdr", "plugin", "pane", "open", "--plugin", "wxomi.task-groups", "--entrypoint", "group-palette", "--placement", "overlay"]
+command = ["/Users/wxomi/.local/share/herdr-task-groups/run.sh", "open"]
 
 [[panes]]
 id = "group-palette"
