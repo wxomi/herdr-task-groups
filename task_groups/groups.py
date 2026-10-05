@@ -193,32 +193,46 @@ def get_group_summary_info(
     return title, location
 
 
+_GROUP_STATE_CACHE: tuple[float, dict] = (0.0, {})
+
+
 def load_group_state() -> dict:
-    """Read group collapsed/expanded state, custom group mappings, and ungrouped panes."""
+    """Read group collapsed/expanded state, custom group mappings, and ungrouped panes (cached by mtime)."""
+    global _GROUP_STATE_CACHE
     default_state = {"collapsed_groups": [], "custom_groups": {}, "ungrouped_panes": []}
     if not os.path.exists(GROUP_STATE_FILE):
-        return default_state
+        return dict(default_state)
     try:
+        mtime = os.path.getmtime(GROUP_STATE_FILE)
+        if mtime > 0 and mtime == _GROUP_STATE_CACHE[0]:
+            return dict(_GROUP_STATE_CACHE[1])
         with open(GROUP_STATE_FILE, encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict):
                 data.setdefault("collapsed_groups", [])
                 data.setdefault("custom_groups", {})
                 data.setdefault("ungrouped_panes", [])
-                return data
+                _GROUP_STATE_CACHE = (mtime, data)
+                return dict(data)
     except (OSError, json.JSONDecodeError):
         pass
     return default_state
 
 
 def save_group_state(state: dict) -> None:
-    """Save group collapsed/expanded state to JSON file."""
+    """Save group collapsed/expanded state to JSON file and update cache."""
+    global _GROUP_STATE_CACHE
     os.makedirs(STATE_DIR, exist_ok=True)
     temp_path = f"{GROUP_STATE_FILE}.tmp"
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
         os.replace(temp_path, GROUP_STATE_FILE)
+        try:
+            mtime = os.path.getmtime(GROUP_STATE_FILE)
+            _GROUP_STATE_CACHE = (mtime, dict(state))
+        except OSError:
+            _GROUP_STATE_CACHE = (0.0, {})
     except OSError:
         pass
 
