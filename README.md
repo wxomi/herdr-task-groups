@@ -30,7 +30,7 @@ Add to your `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
-key = "prefix+alt+g"
+key = "prefix+t"
 type = "plugin_action"
 command = "wxomi.task-groups.move-to-group"
 description = "open task group palette to group agent sessions"
