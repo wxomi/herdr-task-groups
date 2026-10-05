@@ -70,14 +70,20 @@ def cluster_agents_by_group(snapshot: dict) -> dict[str, list[dict]]:
             groups[group].append(a)
             continue
 
-        # 3. Default: project directory or workspace
+        # 3. Dedicated task workspace (anything other than base devel/~ workspaces)
+        ws_id = a.get("workspace_id")
+        ws_label = ws_to_group.get(ws_id)
+        if ws_label and ws_label not in ("devel", "~", "agents"):
+            groups[ws_label].append(a)
+            continue
+
+        # 4. Default: project directory or base workspace
         cwd = a.get("cwd") or a.get("foreground_cwd")
         project = format_agent_path(cwd) if cwd else None
         if project:
             group = project
         else:
-            ws_id = a.get("workspace_id")
-            group = ws_to_group.get(ws_id) or "default"
+            group = ws_label or "default"
         groups[group].append(a)
 
     return dict(groups)

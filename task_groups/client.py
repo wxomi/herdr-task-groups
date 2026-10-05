@@ -79,7 +79,7 @@ class HerdrClient:
 
     def move_pane_to_workspace(
         self, pane_id: str, workspace_id: str, focus: bool = False
-    ) -> bool:
+    ) -> str | None:
         res = self.call(
             "pane.move",
             {
@@ -93,14 +93,20 @@ class HerdrClient:
             init_tab = self._new_workspace_initial_tabs.pop(workspace_id, None)
             if init_tab:
                 self.close_tab(init_tab)
+            move_res = (res.get("result") or {}).get("move_result") or {}
+            created_tab = move_res.get("created_tab") or {}
+            new_tab_id = created_tab.get("tab_id")
+            new_pane_id = (
+                (move_res.get("pane") or {}).get("pane_id")
+                or move_res.get("focused_pane_id")
+                or pane_id
+            )
             if focus:
                 self.focus_workspace(workspace_id)
-                move_res = (res.get("result") or {}).get("move_result") or {}
-                created_tab = move_res.get("created_tab") or {}
-                new_tab_id = created_tab.get("tab_id")
                 if new_tab_id:
                     self.focus_tab(new_tab_id)
-        return ok
+            return new_pane_id
+        return None
 
     def get_or_create_workspace(self, name: str) -> str | None:
         res = self.call("workspace.list")
