@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -83,7 +84,7 @@ def run_picker(prompt: str, items: list[str], multi: bool = False) -> list[str]:
 
 
 def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> int:
-    """Interactively select one or multiple agents and move them to a task group."""
+    """Interactively select agent(s) and move them into a dedicated task workspace."""
     snap = client.snapshot() if client.is_available() else {}
     agents = snap.get("agents", [])
     if not agents:
@@ -92,7 +93,6 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
 
     state = load_group_state()
     custom_groups = state.get("custom_groups", {})
-    all_groups = cluster_agents_by_group(snap)
 
     f_pid = pane_id or os.environ.get("TARGET_PANE") or snap.get("focused_pane_id")
 
@@ -110,11 +110,11 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
         cwd = a.get("cwd", "")
         short_cwd = cwd.split("/")[-1] if cwd else "~"
         current_g = custom_groups.get(pid)
-        group_badge = f" [Group: {current_g}]" if current_g else ""
+        group_badge = f" [Workspace: {current_g}]" if current_g else ""
         is_focused = " (focused)" if pid == f_pid else ""
         agent_choices.append(f"{pid} | [{agent_type}] {title[:32]} ({short_cwd}){group_badge}{is_focused}")
 
-    # Prompt user to select agent(s) (Tab to mark multiple, Enter to confirm)
+    # Step 1: Select agent(s)
     selected_agent_lines = run_picker(
         "Select agent(s) [Tab=multi-select, Ctrl-A=all, Enter=confirm]:",
         agent_choices,
@@ -126,22 +126,23 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
 
     target_pids = [line.split(" | ")[0].strip() for line in selected_agent_lines]
 
-    # Present group options
-    existing_groups = sorted([g for g in all_groups if not g.startswith("_solo_")])
-    options: list[str] = []
-    for g in existing_groups:
-        options.append(f"📁 Move to: {g}")
+    # Step 2: Select or create task workspace
+    ws_labels = [w.get("label") for w in snap.get("workspaces", []) if w.get("label")]
+    clean_ws: list[str] = []
+    for w in ws_labels:
+        clean = re.sub(r"-agents$", "", w)
+        if clean and clean not in clean_ws:
+            clean_ws.append(clean)
 
-    options.append("➕ New group...")
+    options: list[str] = ["➕ New task workspace..."]
+    for ws in sorted(clean_ws):
+        options.append(f"📁 Move to: {ws}")
+
     options.append("✖ Remove from group (make standalone)")
     options.append("🔄 Reset to automatic directory grouping")
-    if len(target_pids) == 1:
-        curr_g = custom_groups.get(target_pids[0])
-        if curr_g and not curr_g.startswith("_solo_"):
-            options.append(f"📦 Move entire group '{curr_g}' to workspace...")
 
     target_label = f"{len(target_pids)} agent(s)" if len(target_pids) > 1 else target_pids[0]
-    prompt_label = f"Move {target_label} to group:"
+    prompt_label = f"Move {target_label} to task workspace:"
     chosen = run_picker(prompt_label, options, multi=False)
     if not chosen:
         print("Canceled.")
@@ -163,53 +164,38 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
         print(f"Reset {len(target_pids)} agent(s) to automatic directory grouping.")
         return 0
 
-    if "Move entire group" in selected:
-        curr_g = custom_groups.get(target_pids[0])
-        if curr_g:
-            ws_options = [w.get("label") or w.get("workspace_id", "") for w in snap.get("workspaces", [])]
-            ws_options.append("➕ New workspace...")
-            chosen_ws = run_picker(f"Move group '{curr_g}' to workspace:", ws_options, multi=False)
-            if not chosen_ws:
-                print("Canceled.")
-                return 0
-            if "New workspace" in chosen_ws[0]:
-                target_ws = input("Enter new workspace name: ").strip()
-            else:
-                target_ws = chosen_ws[0]
-            if target_ws:
-                count = move_group_to_workspace(client, curr_g, target_ws)
-                apply_collapsible_groups(client, force=True)
-                print(f"Moved {count} agents in group '{curr_g}' to workspace '{target_ws}'.")
-        return 0
-
-    if "New group..." in selected:
+    target_workspace = None
+    if "New task workspace" in selected:
         try:
-            new_group = input("Enter new group name: ").strip()
+            target_workspace = input("Enter new task workspace name: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nCanceled.")
             return 0
-        if not new_group:
-            print("Group name cannot be empty.")
+        if not target_workspace:
+            print("Workspace name cannot be empty.")
             return 1
-        for pid in target_pids:
-            move_agent_to_group(pid, new_group)
-        apply_collapsible_groups(client, force=True)
-        print(f"Moved {len(target_pids)} agent(s) to new group '{new_group}'.")
-        return 0
+    elif selected.startswith("📁 Move to: "):
+        target_workspace = selected.split("📁 Move to: ")[1].strip()
 
-    if selected.startswith("📁 Move to: "):
-        g_name = selected.split("📁 Move to: ")[1].strip()
-        for pid in target_pids:
-            move_agent_to_group(pid, g_name)
+    if target_workspace:
+        ws_id = client.get_or_create_workspace(target_workspace)
+        moved_count = 0
+        for idx, pid in enumerate(target_pids):
+            move_agent_to_group(pid, target_workspace)
+            if ws_id and client.move_pane_to_workspace(pid, ws_id, focus=(idx == 0)):
+                moved_count += 1
         apply_collapsible_groups(client, force=True)
-        print(f"Moved {len(target_pids)} agent(s) to group '{g_name}'.")
+        print(f"Moved {len(target_pids)} agent(s) into workspace '{target_workspace}'.")
         return 0
 
     clean_name = selected.strip()
-    for pid in target_pids:
+    ws_id = client.get_or_create_workspace(clean_name)
+    for idx, pid in enumerate(target_pids):
         move_agent_to_group(pid, clean_name)
+        if ws_id:
+            client.move_pane_to_workspace(pid, ws_id, focus=(idx == 0))
     apply_collapsible_groups(client, force=True)
-    print(f"Moved {len(target_pids)} agent(s) to group '{clean_name}'.")
+    print(f"Moved {len(target_pids)} agent(s) into workspace '{clean_name}'.")
     return 0
 
 
