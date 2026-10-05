@@ -85,7 +85,11 @@ def run_picker(prompt: str, items: list[str], multi: bool = False) -> list[str]:
         return []
 
 
-def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> int:
+def interactive_pick_group(
+    client: HerdrClient,
+    pane_id: str | None = None,
+    all_workspaces: bool = False,
+) -> int:
     """Interactively select agent(s) and move them into a dedicated task workspace."""
     snap = client.snapshot() if client.is_available() else {}
     agents = snap.get("agents", [])
@@ -96,7 +100,40 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
     state = load_group_state()
     custom_groups = state.get("custom_groups", {})
 
-    f_pid = pane_id or os.environ.get("TARGET_PANE") or snap.get("focused_pane_id")
+    f_pid = (
+        pane_id
+        or os.environ.get("TARGET_PANE")
+        or os.environ.get("HERDR_PANE_ID")
+        or snap.get("focused_pane_id")
+    )
+
+    # Determine caller workspace to scope the agent list
+    target_ws = (
+        os.environ.get("TARGET_WORKSPACE")
+        or os.environ.get("HERDR_WORKSPACE_ID")
+        or snap.get("focused_workspace_id")
+    )
+    if not target_ws and f_pid:
+        target_ws = f_pid.split(":")[0]
+
+    ws_list = snap.get("workspaces", [])
+    ws_map = {w.get("workspace_id"): w.get("label", "") for w in ws_list if w.get("workspace_id")}
+
+    allowed_ws_ids: set[str] = set()
+    if target_ws and not all_workspaces:
+        allowed_ws_ids.add(target_ws)
+        target_label = ws_map.get(target_ws, "")
+        if target_label:
+            if target_label.endswith("-agents"):
+                base_label = target_label[:-7]
+                for w_id, w_lbl in ws_map.items():
+                    if w_lbl == base_label:
+                        allowed_ws_ids.add(w_id)
+            else:
+                comp_label = f"{target_label}-agents"
+                for w_id, w_lbl in ws_map.items():
+                    if w_lbl == comp_label:
+                        allowed_ws_ids.add(w_id)
 
     # Sort agents: focused pane first
     sorted_agents = sorted(
@@ -104,8 +141,20 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
         key=lambda a: (0 if a.get("pane_id") == f_pid else 1, a.get("pane_id", ""))
     )
 
+    if allowed_ws_ids:
+        active_agents = [a for a in sorted_agents if a.get("workspace_id") in allowed_ws_ids]
+    else:
+        active_agents = sorted_agents
+
+    has_more = len(active_agents) < len(sorted_agents)
+
+    # If no agents match the current workspace, fall back to all agents
+    if not active_agents:
+        active_agents = sorted_agents
+        has_more = False
+
     agent_choices = []
-    for a in sorted_agents:
+    for a in active_agents:
         pid = a.get("pane_id", "")
         agent_type = a.get("agent", "agent")
         title = (a.get("tokens") or {}).get("session") or a.get("title", "")
@@ -116,9 +165,19 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
         is_focused = " (focused)" if pid == f_pid else ""
         agent_choices.append(f"{pid} | [{agent_type}] {title[:32]} ({short_cwd}){group_badge}{is_focused}")
 
+    if has_more:
+        agent_choices.append("🌐 [Show agents from all workspaces...]")
+
+    active_label = ws_map.get(target_ws, target_ws or "this workspace")
+    prompt_text = (
+        f"Select agent(s) in '{active_label}' [Tab=multi-select, Ctrl-A=all, Enter=confirm]:"
+        if (allowed_ws_ids and len(active_agents) < len(sorted_agents))
+        else "Select agent(s) [Tab=multi-select, Ctrl-A=all, Enter=confirm]:"
+    )
+
     # Step 1: Select agent(s)
     selected_agent_lines = run_picker(
-        "Select agent(s) [Tab=multi-select, Ctrl-A=all, Enter=confirm]:",
+        prompt_text,
         agent_choices,
         multi=True,
     )
@@ -126,7 +185,17 @@ def interactive_pick_group(client: HerdrClient, pane_id: str | None = None) -> i
         print("No agent selected.")
         return 0
 
-    target_pids = [line.split(" | ")[0].strip() for line in selected_agent_lines]
+    if any("Show agents from all workspaces" in it for it in selected_agent_lines):
+        return interactive_pick_group(client, pane_id=f_pid, all_workspaces=True)
+
+    target_pids = [
+        line.split(" | ")[0].strip()
+        for line in selected_agent_lines
+        if "Show agents from all workspaces" not in line
+    ]
+    if not target_pids:
+        print("No agent selected.")
+        return 0
 
     # Step 2: Select or create task workspace
     ws_labels = [w.get("label") for w in snap.get("workspaces", []) if w.get("label")]
@@ -318,9 +387,10 @@ def main(argv: list[str] | None = None) -> int:
         pid = None
         if "--pane" in args:
             pid = args[args.index("--pane") + 1]
-        return interactive_pick_group(client=c, pane_id=pid)
+        all_ws = "--all" in args
+        return interactive_pick_group(client=c, pane_id=pid, all_workspaces=all_ws)
 
-    return interactive_pick_group(client=c)
+    return interactive_pick_group(client=c, all_workspaces=("--all" in args))
 
 
 if __name__ == "__main__":
