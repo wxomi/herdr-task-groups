@@ -251,10 +251,10 @@ def interactive_pick_group(
     if target_workspace:
         ws_id = client.get_or_create_workspace(target_workspace)
         moved_count = 0
-        for idx, pid in enumerate(target_pids):
+        for pid in target_pids:
             new_pid = None
             if ws_id:
-                new_pid = client.move_pane_to_workspace(pid, ws_id, focus=(idx == 0))
+                new_pid = client.move_pane_to_workspace(pid, ws_id, focus=False)
             final_pid = new_pid or pid
             move_agent_to_group(final_pid, target_workspace)
             if new_pid and new_pid != pid:
@@ -262,20 +262,24 @@ def interactive_pick_group(
                 moved_count += 1
             elif new_pid:
                 moved_count += 1
+        if ws_id:
+            client.focus_workspace(ws_id)
         apply_collapsible_groups(client, force=True)
         print(f"Moved {len(target_pids)} agent(s) into workspace '{target_workspace}'.")
         return 0
 
     clean_name = selected.strip()
     ws_id = client.get_or_create_workspace(clean_name)
-    for idx, pid in enumerate(target_pids):
+    for pid in target_pids:
         new_pid = None
         if ws_id:
-            new_pid = client.move_pane_to_workspace(pid, ws_id, focus=(idx == 0))
+            new_pid = client.move_pane_to_workspace(pid, ws_id, focus=False)
         final_pid = new_pid or pid
         move_agent_to_group(final_pid, clean_name)
         if new_pid and new_pid != pid:
             ungroup_agent(pid)
+    if ws_id:
+        client.focus_workspace(ws_id)
     apply_collapsible_groups(client, force=True)
     print(f"Moved {len(target_pids)} agent(s) into workspace '{clean_name}'.")
     return 0
