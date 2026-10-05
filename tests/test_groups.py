@@ -8,19 +8,23 @@ import unittest
 from unittest.mock import patch
 
 from task_groups.groups import (
+    apply_collapsible_groups,
     clean_agent_title,
     cluster_agents_by_group,
     extract_common_task_topic,
     get_canonical_group_name,
     get_group_summary_info,
     is_group_collapsed,
+    is_workspace_scoped,
     load_group_state,
     move_agent_to_group,
     reset_agent_group,
     save_group_state,
     toggle_group_collapse,
+    toggle_workspace_scope,
     ungroup_agent,
 )
+from unittest.mock import MagicMock
 
 
 class TestTaskGroups(unittest.TestCase):
@@ -116,6 +120,35 @@ class TestTaskGroups(unittest.TestCase):
             self.assertNotIn("p1", loaded3["custom_groups"])
             self.assertNotIn("p1", loaded3["ungrouped_panes"])
 
+    def test_workspace_scope_toggle(self) -> None:
+        with patch("task_groups.groups.GROUP_STATE_FILE", self.state_file):
+            self.assertTrue(is_workspace_scoped())
+            res = toggle_workspace_scope()
+            self.assertFalse(res)
+            self.assertFalse(is_workspace_scoped())
+            res2 = toggle_workspace_scope()
+            self.assertTrue(res2)
+            self.assertTrue(is_workspace_scoped())
+
+    def test_apply_collapsible_groups_scoped(self) -> None:
+        with patch("task_groups.groups.GROUP_STATE_FILE", self.state_file):
+            mock_client = MagicMock()
+            mock_client.is_available.return_value = True
+            snap = {
+                "workspaces": [{"workspace_id": "w1", "label": "devel"}],
+                "agents": [{"pane_id": "p1", "workspace_id": "w1", "title": "test"}],
+            }
+            # Scoped by default
+            apply_collapsible_groups(mock_client, snap=snap, force=True)
+            mock_client.set_agent_view.assert_called_once()
+            args = mock_client.set_agent_view.call_args[0]
+            self.assertEqual(args[1], "this workspace")
+            self.assertEqual(
+                args[2],
+                {"op": "eq", "field": "workspace_id", "value": {"context": "current_workspace_id"}},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+

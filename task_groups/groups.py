@@ -321,7 +321,22 @@ def move_group_to_workspace(
     return moved_count
 
 
-_LAST_APPLIED_VIEW_PANES: list[str] | None = None
+def is_workspace_scoped() -> bool:
+    """Check if the sidebar is currently scoped to the active workspace."""
+    state = load_group_state()
+    return state.get("scope_workspace", True)
+
+
+def toggle_workspace_scope() -> bool:
+    """Toggle between scoping the sidebar to the current workspace vs showing all."""
+    state = load_group_state()
+    current = state.get("scope_workspace", True)
+    state["scope_workspace"] = not current
+    save_group_state(state)
+    return state["scope_workspace"]
+
+
+_LAST_APPLIED_VIEW_KEY: tuple | None = None
 _LAST_SUMMARY_TOKENS: dict[str, str] = {}
 
 
@@ -331,7 +346,7 @@ def apply_collapsible_groups(
     force: bool = False,
 ) -> bool:
     """Evaluate task groups, update collapsed group summary tokens, and apply Herdr pane filter."""
-    global _LAST_APPLIED_VIEW_PANES, _LAST_SUMMARY_TOKENS
+    global _LAST_APPLIED_VIEW_KEY, _LAST_SUMMARY_TOKENS
     if not client.is_available():
         return False
 
@@ -347,6 +362,7 @@ def apply_collapsible_groups(
     collapsed_groups = set(state.get("collapsed_groups", []))
     custom_groups = state.get("custom_groups", {})
     custom_group_names = set(custom_groups.values())
+    scoped = state.get("scope_workspace", True)
 
     visible_pane_ids: list[str] = []
     has_any_collapsed = False
@@ -385,21 +401,55 @@ def apply_collapsible_groups(
     sorted_visible = sorted(visible_pane_ids)
 
     if has_any_collapsed:
-        if force or sorted_visible != _LAST_APPLIED_VIEW_PANES:
-            ok = client.set_agent_view(
-                SOURCE,
-                "grouped",
-                {"op": "in", "field": "pane_id", "values": sorted_visible},
-            )
+        pane_filter = {"op": "in", "field": "pane_id", "values": sorted_visible}
+        if scoped:
+            target_filter = {
+                "op": "all",
+                "filters": [
+                    {
+                        "op": "eq",
+                        "field": "workspace_id",
+                        "value": {"context": "current_workspace_id"},
+                    },
+                    pane_filter,
+                ],
+            }
+            view_label = "this workspace"
+            cache_key = ("scoped_grouped", tuple(sorted_visible))
+        else:
+            target_filter = pane_filter
+            view_label = "grouped"
+            cache_key = ("grouped", tuple(sorted_visible))
+
+        if force or _LAST_APPLIED_VIEW_KEY != cache_key:
+            ok = client.set_agent_view(SOURCE, view_label, target_filter)
             if ok:
-                _LAST_APPLIED_VIEW_PANES = sorted_visible
+                _LAST_APPLIED_VIEW_KEY = cache_key
             return ok
         return True
     else:
-        if force or _LAST_APPLIED_VIEW_PANES is not None:
-            ok = client.clear_agent_view(SOURCE)
-            if ok:
-                _LAST_APPLIED_VIEW_PANES = None
-                _LAST_SUMMARY_TOKENS.clear()
-            return ok
-        return True
+        if scoped:
+            cache_key = ("scoped_all", ())
+            if force or _LAST_APPLIED_VIEW_KEY != cache_key:
+                ok = client.set_agent_view(
+                    SOURCE,
+                    "this workspace",
+                    {
+                        "op": "eq",
+                        "field": "workspace_id",
+                        "value": {"context": "current_workspace_id"},
+                    },
+                )
+                if ok:
+                    _LAST_APPLIED_VIEW_KEY = cache_key
+                    _LAST_SUMMARY_TOKENS.clear()
+                return ok
+            return True
+        else:
+            if force or _LAST_APPLIED_VIEW_KEY is not None:
+                ok = client.clear_agent_view(SOURCE)
+                if ok:
+                    _LAST_APPLIED_VIEW_KEY = None
+                    _LAST_SUMMARY_TOKENS.clear()
+                return ok
+            return True

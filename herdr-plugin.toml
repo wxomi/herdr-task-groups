@@ -1,6 +1,6 @@
 id = "wxomi.task-groups"
 name = "Task Groups"
-version = "0.2.0"
+version = "0.4.0"
 min_herdr_version = "0.8.0"
 description = "Chrome-style task grouping, interactive multi-select fzf palette, and collapsible coordination"
 platforms = ["linux", "macos"]
@@ -28,3 +28,11 @@ title = "Toggle Task Group"
 description = "Collapse or expand the focused agent task group"
 contexts = ["global"]
 command = ["./run.sh", "--toggle-group"]
+
+[[actions]]
+id = "toggle-scope"
+title = "Toggle Sidebar Workspace Scope"
+description = "Toggle sidebar agents view between current workspace only and all workspaces"
+contexts = ["global"]
+command = ["./run.sh", "--toggle-scope"]
+

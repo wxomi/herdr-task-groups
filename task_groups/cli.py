@@ -17,10 +17,12 @@ from task_groups.groups import (
     expand_all_groups,
     get_group_summary_info,
     load_group_state,
+    is_workspace_scoped,
     move_agent_to_group,
     move_group_to_workspace,
     reset_agent_group,
     toggle_group_collapse,
+    toggle_workspace_scope,
     ungroup_agent,
 )
 
@@ -303,6 +305,13 @@ def main(argv: list[str] | None = None) -> int:
         expand_all_groups()
         apply_collapsible_groups(c, force=True)
         print("All task groups are now EXPANDED.")
+        return 0
+
+    if "--toggle-scope" in args:
+        scoped = toggle_workspace_scope()
+        apply_collapsible_groups(c, force=True)
+        status_txt = "THIS WORKSPACE ONLY" if scoped else "ALL WORKSPACES"
+        print(f"Sidebar agents view scoped to: {status_txt}")
         return 0
 
     if "--pick-group" in args:
